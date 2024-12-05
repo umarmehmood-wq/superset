@@ -98,6 +98,47 @@ if TYPE_CHECKING:
     from superset.models.sql_lab import Query
 
 
+@contextmanager
+def temporarily_disconnect_db():  # type: ignore
+    """
+    Temporary disconnects the metadata database session.
+
+    This is meant to be used during long, blocking operations, so that we can release
+    the database connection for the duration of, for example, a potentially long running
+    query against an analytics database.
+
+    The goal here is to lower the number of concurrent connections to the metadata database,
+    given that Superset has no control over the duration of the analytics query.
+
+    NOTE: only has an effect if feature flag DISABLE_METADATA_DB_DURING_ANALYTICS
+    and using NullPool
+    """
+    pool_type = db.engine.pool.__class__.__name__
+    # Currently only tested/available when used with NullPool
+    do_it = (
+        is_feature_enabled("DISABLE_METADATA_DB_DURING_ANALYTICS")
+        and pool_type == "NullPool"
+    )
+    conn = None
+    try:
+        if do_it:
+            conn = db.session.connection()
+            logger.info("Disconnecting metadata database temporarily")
+            # Closing the session
+            db.session.close()
+            # Closing the connection
+            conn.close()
+        yield None
+    finally:
+        if do_it:
+            logger.info("Reconnecting to metadata database")
+            if not conn or conn.closed:
+                conn = db.session.connection()
+            # Creating a new scoped session
+            # NOTE: Interface changes in flask-sqlalchemy ~3.0
+            db.session = db.create_scoped_session()
+
+
 class KeyValue(Model):  # pylint: disable=too-few-public-methods
     """Used for any type of key-value store"""
 
@@ -706,26 +747,27 @@ class Database(Model, AuditMixinNullable, ImportExportMixin):  # pylint: disable
             cursor = conn.cursor()
             rows = None
 
-            for i, statement in enumerate(script.statements):
-                sql_ = self.mutate_sql_based_on_config(
-                    statement.format(),
-                    is_split=True,
-                )
-                _log_query(sql_)
+            with temporarily_disconnect_db():
+                for i, statement in enumerate(script.statements):
+                    sql_ = self.mutate_sql_based_on_config(
+                        statement.format(),
+                        is_split=True,
+                    )
+                    _log_query(sql_)
 
-                with event_logger.log_context(
-                    action="execute_sql",
-                    database=self,
-                    object_ref=__name__,
-                ):
-                    self.db_engine_spec.execute(cursor, sql_, self)
+                    with event_logger.log_context(
+                        action="execute_sql",
+                        database=self,
+                        object_ref=__name__,
+                    ):
+                        self.db_engine_spec.execute(cursor, sql_, self)
 
-                # Fetch results from last statement if requested
-                if fetch_last_result and i == len(script.statements) - 1:
-                    rows = self.db_engine_spec.fetch_data(cursor)
-                else:
-                    # Consume results without storing
-                    cursor.fetchall()
+                    # Fetch results from last statement if requested
+                    if fetch_last_result and i == len(script.statements) - 1:
+                        rows = self.db_engine_spec.fetch_data(cursor)
+                    else:
+                        # Consume results without storing
+                        cursor.fetchall()
 
             return cursor, rows
 
@@ -929,44 +971,6 @@ class Database(Model, AuditMixinNullable, ImportExportMixin):  # pylint: disable
                 }
         except Exception as ex:
             raise self.db_engine_spec.get_dbapi_mapped_exception(ex) from ex
-
-    @cache_util.memoized_func(
-        key="db:{self.id}:catalog:{catalog}:schema:{schema}:materialized_view_list",
-        cache=cache_manager.cache,
-    )
-    def get_all_materialized_view_names_in_schema(
-        self,
-        catalog: str | None,
-        schema: str,
-    ) -> set[Table]:
-        """Get all materialized views in the specified schema.
-
-        Parameters need to be passed as keyword arguments.
-
-        For unused parameters, they are referenced in
-        cache_util.memoized_func decorator.
-
-        :param catalog: optional catalog name
-        :param schema: schema name
-        :param cache: whether cache is enabled for the function
-        :param cache_timeout: timeout in seconds for the cache
-        :param force: whether to force refresh the cache
-        :return: set of materialized views
-        """
-        try:
-            with self.get_inspector(catalog=catalog, schema=schema) as inspector:
-                return {
-                    Table(view, schema, catalog)
-                    for view in self.db_engine_spec.get_materialized_view_names(
-                        database=self,
-                        inspector=inspector,
-                        schema=schema,
-                    )
-                }
-        except Exception as ex:
-            raise self.db_engine_spec.get_dbapi_mapped_exception(ex) from ex
-
-        return set()
 
     @contextmanager
     def get_inspector(

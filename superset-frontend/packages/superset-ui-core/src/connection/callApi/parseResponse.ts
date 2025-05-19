@@ -63,7 +63,7 @@ export default async function parseResponse<T extends ParseMethod = 'json'>(
           (value?.isGreaterThan?.(Number.MAX_SAFE_INTEGER) ||
             value?.isLessThan?.(Number.MIN_SAFE_INTEGER))
         ) {
-          return BigInt(value);
+          return value.toString();
         }
         // // `json-bigint` could not handle floats well, see sidorares/json-bigint#62
         // // TODO: clean up after json-bigint>1.0.1 is released

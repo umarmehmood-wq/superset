@@ -52,6 +52,7 @@ import { Chart, RootState } from '../../types';
 
 export interface FiltersBadgeProps {
   chartId: number;
+  isCompact?: boolean;
 }
 
 const StyledFilterCount = styled.div`
@@ -76,6 +77,12 @@ const StyledFilterCount = styled.div`
 
     .incompatible-count {
       font-size: ${theme.fontSizeSM}px;
+    }
+    &.is-compact {
+      padding-left: 0;
+      .anticon-filter {
+        display: none;
+      }
     }
     &:focus-visible {
       outline: 2px solid ${theme.colorPrimary};
@@ -114,7 +121,7 @@ const sortByStatus = (indicators: Indicator[]): Indicator[] => {
 
 const indicatorsInitialState: Indicator[] = [];
 
-export const FiltersBadge = ({ chartId }: FiltersBadgeProps) => {
+export const FiltersBadge = ({ chartId, isCompact }: FiltersBadgeProps) => {
   const dispatch = useDispatch();
   const datasources = useSelector<RootState, any>(state => state.datasources);
   const dashboardFilters = useSelector<RootState, any>(
@@ -305,6 +312,7 @@ export const FiltersBadge = ({ chartId }: FiltersBadgeProps) => {
         className={cx(
           'filter-counts',
           !!appliedCrossFilterIndicators.length && 'has-cross-filters',
+          isCompact && 'is-compact',
         )}
         tabIndex={0}
         onKeyDown={handleKeyDown}

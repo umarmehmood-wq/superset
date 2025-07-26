@@ -60,6 +60,7 @@ type SliceHeaderProps = SliceHeaderControlsProps & {
   width: number;
   height: number;
   exportPivotExcel?: (arg0: string) => void;
+  isCompact?: boolean;
 };
 
 const annotationsLoading = t('Annotation layers are still loading.');
@@ -90,9 +91,22 @@ const ChartHeaderStyles = styled.div`
       display: -webkit-box;
       -webkit-line-clamp: 2;
       -webkit-box-orient: vertical;
+      word-break: break-word;
+      hyphens: auto;
+      line-height: 1.4;
 
       & > span.ant-tooltip-open {
         display: inline;
+      }
+    }
+
+    &.chart-header--compact {
+      margin-bottom: ${theme.sizeUnit / 2}px;
+      font-size: ${theme.fontSizeSM}px;
+
+      & > .header-title {
+        -webkit-line-clamp: 1;
+        line-height: 1.2;
       }
     }
 
@@ -169,6 +183,7 @@ const SliceHeader = forwardRef<HTMLDivElement, SliceHeaderProps>(
       width,
       height,
       exportPivotExcel = () => ({}),
+      isCompact = false,
     },
     ref,
   ) => {
@@ -234,7 +249,11 @@ const SliceHeader = forwardRef<HTMLDivElement, SliceHeaderProps>(
     );
 
     return (
-      <ChartHeaderStyles data-test="slice-header" ref={ref}>
+      <ChartHeaderStyles
+        data-test="slice-header"
+        ref={ref}
+        className={isCompact ? 'chart-header--compact' : ''}
+      >
         <div className="header-title" ref={headerRef}>
           <Tooltip title={headerTooltip}>
             <EditableTitle
@@ -298,7 +317,7 @@ const SliceHeader = forwardRef<HTMLDivElement, SliceHeaderProps>(
               )}
 
               {!uiConfig.hideChartControls && (
-                <FiltersBadge chartId={slice.slice_id} />
+                <FiltersBadge chartId={slice.slice_id} isCompact={isCompact} />
               )}
 
               {shouldShowRowLimitWarning && sqlRowCount === rowLimit && (

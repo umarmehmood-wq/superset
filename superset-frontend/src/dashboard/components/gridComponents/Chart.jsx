@@ -21,6 +21,7 @@ import { useCallback, useEffect, useRef, useMemo, useState, memo } from 'react';
 import PropTypes from 'prop-types';
 import { styled, t, logging } from '@superset-ui/core';
 import { debounce } from 'lodash';
+import { useResizeDetector } from 'react-resize-detector';
 import { useHistory } from 'react-router-dom';
 import { bindActionCreators } from 'redux';
 import { useDispatch, useSelector } from 'react-redux';
@@ -80,6 +81,8 @@ const propTypes = {
 // resizing across all slices on a dashboard on every update
 const RESIZE_TIMEOUT = 500;
 const DEFAULT_HEADER_HEIGHT = 22;
+const COMPACT_WIDTH_THRESHOLD = 400;
+const COMPACT_HEIGHT_THRESHOLD = 50;
 
 const ChartWrapper = styled.div`
   overflow: hidden;
@@ -87,6 +90,25 @@ const ChartWrapper = styled.div`
 
   &.dashboard-chart--overflowable {
     overflow: visible;
+  }
+
+  &.dashboard-chart--small {
+    .slice_container {
+      font-size: 0.9em;
+    }
+  }
+
+  &.dashboard-chart--short {
+    .slice_container {
+      .slice-header {
+        margin-bottom: 4px;
+      }
+    }
+  }
+
+  .slice_container {
+    min-height: 100%;
+    height: 100%;
   }
 `;
 
@@ -185,6 +207,24 @@ const Chart = props => {
     [props.width, props.height],
   );
 
+  const immediateResize = useCallback(() => {
+    const { width, height } = props;
+    setHeight(height);
+    setWidth(width);
+  }, [props.width, props.height]);
+
+  const handleContainerResize = useCallback(() => {
+    const { width, height } = props;
+    setHeight(height);
+    setWidth(width);
+  }, [props.width, props.height]);
+
+  const { ref: resizeRef } = useResizeDetector({
+    refreshMode: 'debounce',
+    refreshRate: 100,
+    onResize: handleContainerResize,
+  });
+
   const ownColorScheme = chart.form_data?.color_scheme;
 
   const addFilter = useCallback(
@@ -220,6 +260,14 @@ const Chart = props => {
   useEffect(() => {
     resize();
   }, [resize, props.isFullSize]);
+
+  useEffect(() => {
+    if (props.width !== width || props.height !== height) {
+      immediateResize();
+      resize.cancel();
+      resize();
+    }
+  }, [props.width, props.height, width, height, immediateResize, resize]);
 
   const getHeaderHeight = useCallback(() => {
     if (headerRef.current) {
@@ -323,6 +371,10 @@ const Chart = props => {
   );
 
   formData.dashboardId = dashboardInfo.id;
+
+  useEffect(() => {
+    immediateResize();
+  }, [formData, immediateResize]);
 
   const onExploreChart = useCallback(
     async clickEvent => {
@@ -440,6 +492,7 @@ const Chart = props => {
 
   return (
     <SliceContainer
+      ref={resizeRef}
       className="chart-slice"
       data-test="chart-grid-component"
       data-test-chart-id={props.id}
@@ -450,6 +503,10 @@ const Chart = props => {
         ref={headerRef}
         slice={slice}
         isExpanded={isExpanded}
+        isCompact={
+          width < COMPACT_WIDTH_THRESHOLD ||
+          getChartHeight() < COMPACT_HEIGHT_THRESHOLD
+        }
         isCached={isCached}
         cachedDttm={cachedDttm}
         updatedDttm={chartUpdateEndTime}
@@ -502,7 +559,12 @@ const Chart = props => {
       )}
 
       <ChartWrapper
-        className={cx('dashboard-chart')}
+        className={cx(
+          'dashboard-chart',
+          width < COMPACT_WIDTH_THRESHOLD && 'dashboard-chart--small',
+          getChartHeight() < COMPACT_HEIGHT_THRESHOLD &&
+            'dashboard-chart--short',
+        )}
         aria-label={slice.description}
       >
         {isLoading && (

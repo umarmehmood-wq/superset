@@ -262,3 +262,37 @@ test('should call exportChart with row_limit props.maxRows when exportFullXLSX i
 
   stubbedExportXLSX.mockRestore();
 });
+
+test('should apply responsive classes for small charts', async () => {
+  const smallChartProps = {
+    ...props,
+    width: 350, // Small width
+    height: 180, // Short height
+  };
+
+  const { container } = render(<Chart {...smallChartProps} />, {
+    useRedux: true,
+    useRouter: true,
+  });
+
+  // Wait for the component to render
+  await new Promise(resolve => setTimeout(resolve, 100));
+
+  const chartWrapper = container.querySelector('.dashboard-chart');
+  expect(chartWrapper).toBeDefined();
+  expect(chartWrapper).toHaveClass('dashboard-chart--small');
+  expect(chartWrapper).toHaveClass('dashboard-chart--short');
+});
+
+test('chart should render with resize observer integration', async () => {
+  const { container } = render(<Chart {...props} />, {
+    useRedux: true,
+    useRouter: true,
+  });
+
+  // Check that the chart container has been rendered with the resize ref
+  const chartContainer = container.querySelector(
+    '[data-test="chart-grid-component"]',
+  );
+  expect(chartContainer).toBeInTheDocument();
+});

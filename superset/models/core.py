@@ -42,7 +42,6 @@ from marshmallow.exceptions import ValidationError
 from sqlalchemy import (
     Boolean,
     Column,
-    create_engine,
     DateTime,
     ForeignKey,
     Integer,
@@ -57,7 +56,6 @@ from sqlalchemy.engine.url import URL
 from sqlalchemy.exc import NoSuchModuleError
 from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.orm import relationship
-from sqlalchemy.pool import NullPool
 from sqlalchemy.schema import UniqueConstraint
 from sqlalchemy.sql import ColumnElement, expression, Select
 
@@ -83,10 +81,9 @@ from superset.superset_typing import (
 )
 from superset.utils import cache as cache_util, core as utils, json
 from superset.utils.backports import StrEnum
-from superset.utils.core import get_query_source_from_request, get_username
+from superset.utils.core import get_username
 from superset.utils.oauth2 import (
     check_for_oauth2,
-    get_oauth2_access_token,
     OAuth2ClientConfigSchema,
 )
 
@@ -418,25 +415,64 @@ class Database(Model, AuditMixinNullable, ImportExportMixin):  # pylint: disable
         )
 
     @contextmanager
-    def get_sqla_engine(  # pylint: disable=too-many-arguments
+    def get_sqla_engine(
         self,
         catalog: str | None = None,
         schema: str | None = None,
-        nullpool: bool = True,
+        nullpool: bool = True,  # Kept for backwards compatibility, but ignored
         source: utils.QuerySource | None = None,
         override_ssh_tunnel: SSHTunnel | None = None,
     ) -> Engine:
         """
         Context manager for a SQLAlchemy engine.
 
-        This method will return a context manager for a SQLAlchemy engine. Using the
-        context manager (as opposed to the engine directly) is important because we need
-        to potentially establish SSH tunnels before the connection is created, and clean
-        them up once the engine is no longer used.
+        This method will return a context manager for a SQLAlchemy engine. The engine
+        manager handles connection pooling, SSH tunnels, and other connection details
+        based on the configured mode (NEW or SINGLETON).
+
+        Note: The nullpool parameter is kept for backwards compatibility but is ignored.
+        Pool configuration is now read from the database's extra configuration.
         """
-        from superset.daos.database import (  # pylint: disable=import-outside-toplevel
-            DatabaseDAO,
+        # For now, we handle SSH tunnel override separately to maintain compatibility
+        if override_ssh_tunnel:
+            # Fall back to the legacy implementation for this specific case
+            # This can be refactored later when SSH tunnel handling is moved to
+            # the engine manager
+            return self._get_sqla_engine_legacy(
+                catalog=catalog,
+                schema=schema,
+                source=source,
+                override_ssh_tunnel=override_ssh_tunnel,
+            )
+
+        # Import here to avoid circular imports
+        from superset.extensions import engine_manager_extension
+
+        # Use the engine manager to get the engine
+        engine_manager = engine_manager_extension.manager
+        return engine_manager.get_engine(
+            database=self,
+            catalog=catalog,
+            schema=schema,
+            source=source,
         )
+
+    @contextmanager
+    def _get_sqla_engine_legacy(
+        self,
+        catalog: str | None = None,
+        schema: str | None = None,
+        source: utils.QuerySource | None = None,
+        override_ssh_tunnel: SSHTunnel | None = None,
+    ) -> Engine:
+        """
+        Legacy implementation for SSH tunnel override support.
+
+        This is a temporary method to handle the specific case of override_ssh_tunnel.
+        It will be removed once SSH tunnel handling is integrated into the engine
+        manager.
+        """
+        from superset.daos.database import DatabaseDAO
 
         sqlalchemy_uri = self.sqlalchemy_uri_decrypted
 
@@ -464,89 +500,39 @@ class Database(Model, AuditMixinNullable, ImportExportMixin):  # pylint: disable
                     ssh_context,
                 )
 
+            # Create engine with custom context manager and OAuth2 check
             engine_context_manager = config["ENGINE_CONTEXT_MANAGER"]
             with engine_context_manager(self, catalog, schema):
                 with check_for_oauth2(self):
-                    yield self._get_sqla_engine(
+                    # Import here to avoid circular imports
+                    from superset.engines.manager import EngineManager, EngineModes
+
+                    # Create a temporary engine manager in NEW mode
+                    temp_manager = EngineManager(mode=EngineModes.NEW)
+
+                    # Create a mock database object with the SSH tunnel URI
+                    class MockDatabase:
+                        def __init__(self, real_db: Database, ssh_uri: str):
+                            self._real_db = real_db
+                            self._ssh_uri = ssh_uri
+
+                        @property
+                        def sqlalchemy_uri_decrypted(self) -> str:
+                            return self._ssh_uri
+
+                        def __getattr__(self, name: str) -> Any:
+                            return getattr(self._real_db, name)
+
+                    mock_db = cast(Database, MockDatabase(self, sqlalchemy_uri))
+
+                    # Use the temporary manager with the mock database
+                    with temp_manager.get_engine(
+                        database=mock_db,
                         catalog=catalog,
                         schema=schema,
-                        nullpool=nullpool,
                         source=source,
-                        sqlalchemy_uri=sqlalchemy_uri,
-                    )
-
-    def _get_sqla_engine(  # pylint: disable=too-many-locals  # noqa: C901
-        self,
-        catalog: str | None = None,
-        schema: str | None = None,
-        nullpool: bool = True,
-        source: utils.QuerySource | None = None,
-        sqlalchemy_uri: str | None = None,
-    ) -> Engine:
-        sqlalchemy_url = make_url_safe(
-            sqlalchemy_uri if sqlalchemy_uri else self.sqlalchemy_uri_decrypted
-        )
-        self.db_engine_spec.validate_database_uri(sqlalchemy_url)
-
-        extra = self.get_extra(source)
-        engine_kwargs = extra.get("engine_params", {})
-        if nullpool:
-            engine_kwargs["poolclass"] = NullPool
-        connect_args = engine_kwargs.setdefault("connect_args", {})
-
-        # modify URL/args for a specific catalog/schema
-        sqlalchemy_url, connect_args = self.db_engine_spec.adjust_engine_params(
-            uri=sqlalchemy_url,
-            connect_args=connect_args,
-            catalog=catalog,
-            schema=schema,
-        )
-
-        effective_username = self.get_effective_user(sqlalchemy_url)
-        if effective_username and is_feature_enabled("IMPERSONATE_WITH_EMAIL_PREFIX"):
-            user = security_manager.find_user(username=effective_username)
-            if user and user.email:
-                effective_username = user.email.split("@")[0]
-
-        oauth2_config = self.get_oauth2_config()
-        access_token = (
-            get_oauth2_access_token(
-                oauth2_config,
-                self.id,
-                g.user.id,
-                self.db_engine_spec,
-            )
-            if oauth2_config and hasattr(g, "user") and hasattr(g.user, "id")
-            else None
-        )
-        masked_url = self.get_password_masked_url(sqlalchemy_url)
-        logger.debug("Database._get_sqla_engine(). Masked URL: %s", str(masked_url))
-
-        if self.impersonate_user:
-            sqlalchemy_url, engine_kwargs = self.db_engine_spec.impersonate_user(
-                self,
-                effective_username,
-                access_token,
-                sqlalchemy_url,
-                engine_kwargs,
-            )
-
-        self.update_params_from_encrypted_extra(engine_kwargs)
-
-        if DB_CONNECTION_MUTATOR:
-            source = source or get_query_source_from_request()
-
-            sqlalchemy_url, engine_kwargs = DB_CONNECTION_MUTATOR(
-                sqlalchemy_url,
-                engine_kwargs,
-                effective_username,
-                security_manager,
-                source,
-            )
-        try:
-            return create_engine(sqlalchemy_url, **engine_kwargs)
-        except Exception as ex:
-            raise self.db_engine_spec.get_dbapi_mapped_exception(ex) from ex
+                    ) as engine:
+                        yield engine
 
     def add_database_to_signature(
         self,
@@ -571,13 +557,12 @@ class Database(Model, AuditMixinNullable, ImportExportMixin):  # pylint: disable
         self,
         catalog: str | None = None,
         schema: str | None = None,
-        nullpool: bool = True,
+        nullpool: bool = True,  # Kept for backwards compatibility, but ignored
         source: utils.QuerySource | None = None,
     ) -> Connection:
         with self.get_sqla_engine(
             catalog=catalog,
             schema=schema,
-            nullpool=nullpool,
             source=source,
         ) as engine:
             with check_for_oauth2(self):

@@ -194,6 +194,7 @@ class Database(Model, AuditMixinNullable, ImportExportMixin):  # pylint: disable
         "external_url",
         "encrypted_extra",
         "impersonate_user",
+        "ssh_tunnel",
     ]
     export_children = ["tables"]
 

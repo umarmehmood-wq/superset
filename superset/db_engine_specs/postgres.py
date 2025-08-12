@@ -245,8 +245,20 @@ class PostgresEngineSpec(BasicParametersMixin, PostgresBaseEngineSpec):
         ),
     )
 
+    # PostgreSQL INTERVAL values need normalization for chart rendering.
+    # psycopg2 returns timedelta objects which we convert to seconds for numeric
+    # operations in bar/pie charts. String representations pass through for
+    # potential future frontend formatting.
     column_type_mutators: dict[Any, Callable[[Any], Any]] = {
-        INTERVAL: lambda v: v.total_seconds() if hasattr(v, "total_seconds") else v,
+        INTERVAL: lambda v: (
+            v.total_seconds()
+            if hasattr(v, "total_seconds")
+            else float(v)
+            if isinstance(v, (int, float))
+            else 0
+            if v is None
+            else v  # Pass through string representations and other types
+        ),
     }
 
     @classmethod

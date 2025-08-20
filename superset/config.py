@@ -52,6 +52,7 @@ from superset.advanced_data_type.plugins.internet_address import internet_addres
 from superset.advanced_data_type.plugins.internet_port import internet_port
 from superset.advanced_data_type.types import AdvancedDataType
 from superset.constants import CHANGE_ME_SECRET_KEY
+from superset.engines.manager import EngineModes
 from superset.jinja_context import BaseTemplateProcessor
 from superset.key_value.types import JsonKeyValueCodec
 from superset.stats_logger import DummyStatsLogger
@@ -237,14 +238,14 @@ SQLALCHEMY_CUSTOM_PASSWORD_STORE = None
 # Engine Manager Configuration
 # ---------------------------------------------------------
 
-# Engine manager mode: "NEW" creates a new engine for every connection (default),
-# "SINGLETON" reuses engines with connection pooling
-ENGINE_MANAGER_MODE = "NEW"
+# Engine manager mode: EngineModes.PER_CONNECTION creates a new engine for every connection (default),
+# EngineModes.POOLED reuses engines with connection pooling
+ENGINE_MANAGER_MODE = EngineModes.PER_CONNECTION
 
 # Cleanup interval for abandoned locks in seconds (default: 5 minutes)
 ENGINE_MANAGER_CLEANUP_INTERVAL = 300.0
 
-# Automatically start cleanup thread for SINGLETON mode (default: True)
+# Automatically start cleanup thread for POOLED mode (default: True)
 ENGINE_MANAGER_AUTO_START_CLEANUP = True
 
 # ---------------------------------------------------------

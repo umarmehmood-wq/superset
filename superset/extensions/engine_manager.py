@@ -45,16 +45,27 @@ class EngineManagerExtension:
         Initialize the EngineManager with Flask app configuration.
         """
         # Get configuration values with defaults
-        mode_name = app.config.get("ENGINE_MANAGER_MODE", "NEW")
+        mode_config = app.config.get("ENGINE_MANAGER_MODE", EngineModes.PER_CONNECTION)
         cleanup_interval = app.config.get("ENGINE_MANAGER_CLEANUP_INTERVAL", 300.0)
         auto_start_cleanup = app.config.get("ENGINE_MANAGER_AUTO_START_CLEANUP", True)
 
-        # Convert mode string to enum
-        try:
-            mode = EngineModes[mode_name.upper()]
-        except KeyError:
+        # Handle both string and enum values for backward compatibility
+        if isinstance(mode_config, str):
+            try:
+                mode = EngineModes[mode_config.upper()]
+                logger.info(
+                    f"Converting ENGINE_MANAGER_MODE string '{mode_config}' to enum"
+                )
+            except KeyError:
+                logger.warning(
+                    f"Invalid ENGINE_MANAGER_MODE '{mode_config}', defaulting to PER_CONNECTION"
+                )
+                mode = EngineModes.PER_CONNECTION
+        elif isinstance(mode_config, EngineModes):
+            mode = mode_config
+        else:
             logger.warning(
-                f"Invalid ENGINE_MANAGER_MODE '{mode_name}', defaulting to NEW"
+                f"Invalid ENGINE_MANAGER_MODE type {type(mode_config)}, defaulting to PER_CONNECTION"
             )
             mode = EngineModes.NEW
 
@@ -64,8 +75,8 @@ class EngineManagerExtension:
             cleanup_interval=cleanup_interval,
         )
 
-        # Start cleanup thread if requested and in SINGLETON mode
-        if auto_start_cleanup and mode == EngineModes.SINGLETON:
+        # Start cleanup thread if requested and in POOLED mode
+        if auto_start_cleanup and mode == EngineModes.POOLED:
             self.engine_manager.start_cleanup_thread()
             logger.info("Started EngineManager cleanup thread")
 

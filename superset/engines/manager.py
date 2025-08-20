@@ -49,11 +49,11 @@ TunnelKey = str
 class EngineModes(enum.Enum):
     # reuse existing engine if available, otherwise create a new one; this mode should
     # have a connection pool configured in the database
-    SINGLETON = enum.auto()
+    POOLED = enum.auto()
 
     # always create a new engine for every connection; this mode will use a NullPool
     # and is the default behavior for Superset
-    NEW = enum.auto()
+    PER_CONNECTION = enum.auto()
 
 
 class EngineManager:
@@ -63,13 +63,13 @@ class EngineManager:
     This class handles the creation and management of SQLAlchemy engines, allowing them
     to be configured with connection pools and reused across requests. The default mode
     is the default behavior for Superset, where we create a new engine for every
-    connection, using a NullPool. The `SINGLETON` mode allows for reusing of the
+    connection, using a NullPool. The `POOLED` mode allows for reusing of the
     engines, as well as configuring the pool through the database settings.
     """
 
     def __init__(
         self,
-        mode: EngineModes = EngineModes.NEW,
+        mode: EngineModes = EngineModes.PER_CONNECTION,
         cleanup_interval: float = 300.0,  # 5 minutes default
     ) -> None:
         self.mode = mode
@@ -139,7 +139,7 @@ class EngineManager:
         source = source or get_query_source_from_request()
         user_id = get_user_id()
 
-        if self.mode == EngineModes.NEW:
+        if self.mode == EngineModes.PER_CONNECTION:
             return self._create_engine(
                 database,
                 catalog,
@@ -217,7 +217,7 @@ class EngineManager:
         kwargs = extra.get("engine_params", {})
 
         # get pool class
-        if self.mode == EngineModes.NEW or "poolclass" not in extra:
+        if self.mode == EngineModes.PER_CONNECTION or "poolclass" not in extra:
             kwargs["poolclass"] = pool.NullPool
         else:
             pools = {
@@ -421,7 +421,7 @@ class EngineManager:
             )
             kwargs["ssh_pkey"] = private_key
 
-        if self.mode == EngineModes.NEW:
+        if self.mode == EngineModes.PER_CONNECTION:
             kwargs["keepalive"] = 0  # disable
 
         return kwargs

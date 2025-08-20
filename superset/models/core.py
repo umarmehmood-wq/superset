@@ -428,7 +428,7 @@ class Database(Model, AuditMixinNullable, ImportExportMixin):  # pylint: disable
 
         This method will return a context manager for a SQLAlchemy engine. The engine
         manager handles connection pooling, SSH tunnels, and other connection details
-        based on the configured mode (NEW or SINGLETON).
+        based on the configured mode (PER_CONNECTION or POOLED).
 
         Note: The nullpool parameter is kept for backwards compatibility but is ignored.
         Pool configuration is now read from the database's extra configuration.
@@ -507,8 +507,8 @@ class Database(Model, AuditMixinNullable, ImportExportMixin):  # pylint: disable
                     # Import here to avoid circular imports
                     from superset.engines.manager import EngineManager, EngineModes
 
-                    # Create a temporary engine manager in NEW mode
-                    temp_manager = EngineManager(mode=EngineModes.NEW)
+                    # Create a temporary engine manager in PER_CONNECTION mode
+                    temp_manager = EngineManager(mode=EngineModes.PER_CONNECTION)
 
                     # Create a mock database object with the SSH tunnel URI
                     class MockDatabase:

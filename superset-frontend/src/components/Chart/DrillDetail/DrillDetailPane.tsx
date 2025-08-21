@@ -42,7 +42,7 @@ import { useResizeDetector } from 'react-resize-detector';
 import BooleanCell from '@superset-ui/core/components/Table/cell-renderers/BooleanCell';
 import NullCell from '@superset-ui/core/components/Table/cell-renderers/NullCell';
 import TimeCell from '@superset-ui/core/components/Table/cell-renderers/TimeCell';
-import { EmptyState, Loading } from '@superset-ui/core/components';
+import { EmptyState, Flex, Loading } from '@superset-ui/core/components';
 import { getDatasourceSamples } from 'src/components/Chart/chartAction';
 import Table, {
   ColumnsType,
@@ -307,13 +307,7 @@ export default function DrillDetailPane({
     }));
 
     content = (
-      <div
-        css={css`
-          height: 100%;
-          display: flex;
-          flex-direction: column;
-        `}
-      >
+      <Flex vertical style={{ height: '100%' }}>
         <StatefulChart
           chartId={dataset.drill_through_chart_id}
           formDataOverrides={{
@@ -323,7 +317,7 @@ export default function DrillDetailPane({
           width="100%"
           showLoading
         />
-      </div>
+      </Flex>
     );
   } else if (responseError) {
     // Render error if page download failed

@@ -293,7 +293,7 @@ export default function DrillDetailPane({
 
   const allowHTML = formData.allow_render_html ?? true;
 
-  let content = null;
+  let tableContent = null;
 
   // If a drill-through chart is configured, use it instead of the table
   if (dataset?.drill_through_chart_id) {
@@ -306,7 +306,7 @@ export default function DrillDetailPane({
       expressionType: 'SIMPLE' as const,
     }));
 
-    content = (
+    tableContent = (
       <Flex vertical style={{ height: '100%' }}>
         <StatefulChart
           chartId={dataset.drill_through_chart_id}
@@ -321,7 +321,7 @@ export default function DrillDetailPane({
     );
   } else if (responseError) {
     // Render error if page download failed
-    content = (
+    tableContent = (
       <pre
         css={css`
           margin-top: ${theme.sizeUnit * 4}px;
@@ -332,14 +332,14 @@ export default function DrillDetailPane({
     );
   } else if (bootstrapping) {
     // Render loading if first page hasn't loaded
-    content = <Loading />;
+    tableContent = <Loading />;
   } else if (resultsPage?.total === 0) {
     // Render empty state if no results are returned for page
     const title = t('No rows were returned for this dataset');
-    content = <EmptyState image="document.svg" title={title} />;
+    tableContent = <EmptyState image="document.svg" title={title} />;
   } else {
     // Render table if at least one page has successfully loaded
-    content = (
+    tableContent = (
       <Resizable>
         <Table
           data={data}
@@ -372,7 +372,7 @@ export default function DrillDetailPane({
           onReload={handleReload}
         />
       )}
-      {content}
+      {tableContent}
     </>
   );
 }

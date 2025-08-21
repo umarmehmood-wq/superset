@@ -242,8 +242,8 @@ SQLALCHEMY_CUSTOM_PASSWORD_STORE = None
 # connection (default), EngineModes.POOLED reuses engines with connection pooling
 ENGINE_MANAGER_MODE = EngineModes.PER_CONNECTION
 
-# Cleanup interval for abandoned locks in seconds (default: 5 minutes)
-ENGINE_MANAGER_CLEANUP_INTERVAL = 300.0
+# Cleanup interval for abandoned locks in seconds
+ENGINE_MANAGER_CLEANUP_INTERVAL = timedelta(minutes=5).total_seconds()
 
 # Automatically start cleanup thread for POOLED mode (default: True)
 ENGINE_MANAGER_AUTO_START_CLEANUP = True

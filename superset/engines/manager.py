@@ -546,15 +546,21 @@ class EngineManager:
         return engine
 
     def start_cleanup_thread(self) -> None:
-        """Start the background cleanup thread."""
+        """
+        Start the background cleanup thread.
+        """
         self._cleanup_manager.start()
 
     def stop_cleanup_thread(self) -> None:
-        """Stop the background cleanup thread gracefully."""
+        """
+        Stop the background cleanup thread gracefully.
+        """
         self._cleanup_manager.stop()
 
     def cleanup(self) -> None:
-        """Manually trigger cleanup of abandoned locks."""
+        """
+        Manually trigger cleanup of abandoned locks.
+        """
         self._cleanup_manager.trigger_cleanup()
 
     def _cleanup_abandoned_locks(self) -> None:

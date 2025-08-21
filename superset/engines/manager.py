@@ -16,12 +16,14 @@
 # under the License.
 
 import enum
+import hashlib
 import logging
 import threading
 from collections import defaultdict
 from contextlib import contextmanager
+from datetime import timedelta
 from io import StringIO
-from typing import Any, TYPE_CHECKING
+from typing import Any, Callable, TYPE_CHECKING
 
 from flask import current_app
 from paramiko import RSAKey
@@ -56,6 +58,211 @@ class EngineModes(enum.Enum):
     PER_CONNECTION = enum.auto()
 
 
+class TunnelManager:
+    """
+    Manages SSH tunnel lifecycle and caching.
+
+    Handles creation, caching, health checking, and cleanup of SSH tunnels
+    used for database connections.
+    """
+
+    def __init__(self, mode: EngineModes) -> None:
+        self.mode = mode
+
+        self._tunnels: dict[TunnelKey, SSHTunnelForwarder] = {}
+        self._tunnel_locks: defaultdict[
+            TunnelKey,
+            threading.Lock,
+        ] = defaultdict(threading.Lock)
+
+    def get_tunnel(self, ssh_tunnel: "SSHTunnel", uri: URL) -> SSHTunnelForwarder:
+        """
+        Get or create an SSH tunnel for the given configuration.
+        """
+        tunnel_key = self._get_tunnel_key(ssh_tunnel, uri)
+
+        # Check if tunnel exists and is healthy
+        if tunnel_key in self._tunnels:
+            tunnel = self._tunnels[tunnel_key]
+            if tunnel.is_active:
+                return tunnel
+
+        # Create or recreate tunnel with proper locking
+        with self._tunnel_locks[tunnel_key]:
+            existing_tunnel = self._tunnels.get(tunnel_key)
+            if existing_tunnel and existing_tunnel.is_active:
+                return existing_tunnel
+
+            # Replace inactive or missing tunnel
+            return self._replace_tunnel(tunnel_key, ssh_tunnel, uri, existing_tunnel)
+
+    def _replace_tunnel(
+        self,
+        tunnel_key: str,
+        ssh_tunnel: "SSHTunnel",
+        uri: URL,
+        old_tunnel: SSHTunnelForwarder | None,
+    ) -> SSHTunnelForwarder:
+        """
+        Replace tunnel with proper cleanup. Assumes caller holds lock.
+        """
+        if old_tunnel:
+            try:
+                old_tunnel.stop()
+            except Exception:
+                logger.exception("Error stopping old tunnel")
+
+        try:
+            new_tunnel = self._create_tunnel(ssh_tunnel, uri)
+            self._tunnels[tunnel_key] = new_tunnel
+        except Exception:
+            # Remove failed tunnel from cache
+            self._tunnels.pop(tunnel_key, None)
+            logger.exception("Failed to create tunnel")
+            raise
+
+        return new_tunnel
+
+    def _get_tunnel_key(self, ssh_tunnel: "SSHTunnel", uri: URL) -> TunnelKey:
+        """
+        Build a unique key for the SSH tunnel by hashing parameters.
+        ."""
+        keys = self._get_tunnel_kwargs(ssh_tunnel, uri)
+        keys_json = dumps(keys, sort_keys=True)
+
+        # Hash the key to avoid storing sensitive information
+        return hashlib.sha256(keys_json.encode()).hexdigest()
+
+    def _create_tunnel(self, ssh_tunnel: "SSHTunnel", uri: URL) -> SSHTunnelForwarder:
+        """
+        Create and start a new SSH tunnel.
+        """
+        kwargs = self._get_tunnel_kwargs(ssh_tunnel, uri)
+        tunnel = SSHTunnelForwarder(**kwargs)
+        tunnel.start()
+
+        return tunnel
+
+    def _get_tunnel_kwargs(self, ssh_tunnel: "SSHTunnel", uri: URL) -> dict[str, Any]:
+        """
+        Build kwargs for SSHTunnelForwarder.
+        """
+        from superset.utils.ssh_tunnel import get_default_port
+
+        backend = uri.get_backend_name()
+        kwargs = {
+            "ssh_address_or_host": (ssh_tunnel.server_address, ssh_tunnel.server_port),
+            "ssh_username": ssh_tunnel.username,
+            "remote_bind_address": (uri.host, uri.port or get_default_port(backend)),
+            "local_bind_address": (ssh_tunnel.local_bind_address,),
+            "debug_level": logging.getLogger("flask_appbuilder").level,
+        }
+
+        if ssh_tunnel.password:
+            kwargs["ssh_password"] = ssh_tunnel.password
+        elif ssh_tunnel.private_key:
+            private_key_file = StringIO(ssh_tunnel.private_key)
+            private_key = RSAKey.from_private_key(
+                private_key_file,
+                ssh_tunnel.private_key_password,
+            )
+            kwargs["ssh_pkey"] = private_key
+
+        # disable keepalive if using per-connection mode
+        if self.mode == EngineModes.PER_CONNECTION:
+            kwargs["keepalive"] = 0
+
+        return kwargs
+
+    def get_active_tunnels(self) -> set[TunnelKey]:
+        """
+        Return set of currently active tunnel keys.
+        """
+        return set(self._tunnels.keys())
+
+    def cleanup_locks(self, active_keys: set[TunnelKey]) -> int:
+        """
+        Remove locks for tunnels that no longer exist.
+
+        Returns number cleaned.
+        """
+        abandoned_locks = set(self._tunnel_locks.keys()) - active_keys
+        for key in abandoned_locks:
+            self._tunnel_locks.pop(key, None)
+
+        return len(abandoned_locks)
+
+
+class CleanupManager:
+    """
+    Manages background cleanup threads for resource cleanup.
+
+    Handles starting, stopping, and coordinating background cleanup
+    operations to prevent memory leaks.
+    """
+
+    def __init__(self, cleanup_interval: float, cleanup_fn: Callable[[], None]) -> None:
+        self.cleanup_interval = cleanup_interval
+        self.cleanup_fn = cleanup_fn
+        self._cleanup_thread: threading.Thread | None = None
+        self._cleanup_stop_event = threading.Event()
+        self._cleanup_thread_lock = threading.Lock()
+
+    def start(self) -> None:
+        """
+        Start the background cleanup thread.
+        """
+        with self._cleanup_thread_lock:
+            if self._cleanup_thread is None or not self._cleanup_thread.is_alive():
+                self._cleanup_stop_event.clear()
+                self._cleanup_thread = threading.Thread(
+                    target=self._cleanup_worker,
+                    name=f"CleanupManager-{id(self)}",
+                    daemon=True,
+                )
+                self._cleanup_thread.start()
+                logger.info(
+                    f"Started cleanup thread with {self.cleanup_interval}s interval"
+                )
+
+    def stop(self) -> None:
+        """
+        Stop the background cleanup thread gracefully.
+        """
+        with self._cleanup_thread_lock:
+            if self._cleanup_thread is not None and self._cleanup_thread.is_alive():
+                self._cleanup_stop_event.set()
+                self._cleanup_thread.join(timeout=5.0)  # 5 second timeout
+                if self._cleanup_thread.is_alive():
+                    logger.warning("Cleanup thread did not stop within timeout")
+                else:
+                    logger.info("Cleanup thread stopped")
+                self._cleanup_thread = None
+
+    def trigger_cleanup(self) -> None:
+        """
+        Manually trigger cleanup operation.
+        """
+        try:
+            self.cleanup_fn()
+        except Exception:
+            logger.exception("Error during manual cleanup")
+
+    def _cleanup_worker(self) -> None:
+        """
+        Background thread worker that periodically runs cleanup.
+        """
+        while not self._cleanup_stop_event.is_set():
+            try:
+                self.cleanup_fn()
+            except Exception:
+                logger.exception("Error during background cleanup")
+
+            # Use wait() instead of sleep() to allow for immediate shutdown
+            if self._cleanup_stop_event.wait(timeout=self.cleanup_interval):
+                break  # Stop event was set
+
+
 class EngineManager:
     """
     A manager for SQLAlchemy engines.
@@ -70,32 +277,30 @@ class EngineManager:
     def __init__(
         self,
         mode: EngineModes = EngineModes.PER_CONNECTION,
-        cleanup_interval: float = 300.0,  # 5 minutes default
+        cleanup_interval: float = timedelta(minutes=5).total_seconds(),
     ) -> None:
         self.mode = mode
-        self.cleanup_interval = cleanup_interval
 
+        # Core engine management
         self._engines: dict[EngineKey, Engine] = {}
-        self._engine_locks: dict[EngineKey, threading.Lock] = defaultdict(
-            threading.Lock
-        )
+        self._engine_locks: defaultdict[
+            EngineKey,
+            threading.Lock,
+        ] = defaultdict(threading.Lock)
 
-        self._tunnels: dict[TunnelKey, SSHTunnelForwarder] = {}
-        self._tunnel_locks: dict[TunnelKey, threading.Lock] = defaultdict(
-            threading.Lock
+        # Composed managers for specific responsibilities
+        self._tunnel_manager = TunnelManager(mode)
+        self._cleanup_manager = CleanupManager(
+            cleanup_interval,
+            self._cleanup_abandoned_locks,
         )
-
-        # Background cleanup thread management
-        self._cleanup_thread: threading.Thread | None = None
-        self._cleanup_stop_event = threading.Event()
-        self._cleanup_thread_lock = threading.Lock()
 
     def __del__(self) -> None:
         """
         Ensure cleanup thread is stopped when the manager is destroyed.
         """
         try:
-            self.stop_cleanup_thread()
+            self._cleanup_manager.stop()
         except Exception as ex:
             # Avoid exceptions during garbage collection, but log if possible
             try:
@@ -118,6 +323,7 @@ class EngineManager:
         # users can wrap the engine in their own context manager for different
         # reasons
         customization = current_app.config["ENGINE_CONTEXT_MANAGER"]
+
         with customization(database, catalog, schema):
             # we need to check for errors indicating that OAuth2 is needed, and
             # return the proper exception so it starts the authentication flow
@@ -139,6 +345,7 @@ class EngineManager:
         source = source or get_query_source_from_request()
         user_id = get_user_id()
 
+        # default behavior is to create a new engine for every connection
         if self.mode == EngineModes.PER_CONNECTION:
             return self._create_engine(
                 database,
@@ -194,7 +401,10 @@ class EngineManager:
         keys["uri"] = uri
         keys["source"] = source
 
-        return dumps(keys, sort_keys=True)
+        keys_json = dumps(keys, sort_keys=True)
+
+        # Hash the key to avoid storing sensitive information
+        return hashlib.sha256(keys_json.encode()).hexdigest()
 
     def _get_engine_args(
         self,
@@ -208,9 +418,13 @@ class EngineManager:
         Build the almost final SQLAlchemy URI and engine kwargs.
 
         "Almost" final because we may still need to mutate the URI if an SSH tunnel is
-        needed, since it needs to connect to the tunnel instead of the original DB. But
-        that information is only available after the tunnel is created.
+        needed, since the drivers needs to connect to the tunnel instead of the original
+        DB. But the local SSH port number is only available after the tunnel is created.
         """
+        from superset.extensions import security_manager
+        from superset.utils.feature_flag_manager import FeatureFlagManager
+        from superset.utils.oauth2 import get_oauth2_access_token
+
         uri = make_url_safe(database.sqlalchemy_uri_decrypted)
 
         extra = database.get_extra(source)
@@ -229,6 +443,12 @@ class EngineManager:
             }
             kwargs["poolclass"] = pools.get(extra["poolclass"], pool.QueuePool)
 
+            # Set default pool_recycle for connection pools to prevent stale connections
+            # Only set if not explicitly configured and we're using a real pool
+            if "pool_recycle" not in kwargs and kwargs["poolclass"] != pool.NullPool:
+                # 1 hour default - conservative but prevents most timeout issues
+                kwargs["pool_recycle"] = 3600
+
         # update URI for specific catalog/schema
         connect_args = extra.setdefault("connect_args", {})
         uri, connect_args = database.db_engine_spec.adjust_engine_params(
@@ -241,10 +461,6 @@ class EngineManager:
         # get effective username
         username = database.get_effective_user(uri)
 
-        # Import here to avoid circular imports
-        from superset.extensions import security_manager
-        from superset.utils.feature_flag_manager import FeatureFlagManager
-
         feature_flag_manager = FeatureFlagManager()
         if username and feature_flag_manager.is_feature_enabled(
             "IMPERSONATE_WITH_EMAIL_PREFIX"
@@ -256,9 +472,6 @@ class EngineManager:
         # update URI/kwargs for user impersonation
         if database.impersonate_user:
             oauth2_config = database.get_oauth2_config()
-            # Import here to avoid circular imports
-            from superset.utils.oauth2 import get_oauth2_access_token
-
             access_token = (
                 get_oauth2_access_token(
                     oauth2_config,
@@ -284,9 +497,6 @@ class EngineManager:
         # mutate URI
         if mutator := current_app.config["DB_CONNECTION_MUTATOR"]:
             source = source or get_query_source_from_request()
-            # Import here to avoid circular imports
-            from superset.extensions import security_manager
-
             uri, kwargs = mutator(
                 uri,
                 kwargs,
@@ -321,9 +531,8 @@ class EngineManager:
             user_id,
         )
 
-        tunnel = None
         if database.ssh_tunnel:
-            tunnel = self._get_tunnel(database.ssh_tunnel, uri)
+            tunnel = self._tunnel_manager.get_tunnel(database.ssh_tunnel, uri)
             uri = uri.set(
                 host=tunnel.local_bind_address[0],
                 port=tunnel.local_bind_port,
@@ -336,155 +545,17 @@ class EngineManager:
 
         return engine
 
-    def _get_tunnel(self, ssh_tunnel: "SSHTunnel", uri: URL) -> SSHTunnelForwarder:
-        tunnel_key = self._get_tunnel_key(ssh_tunnel, uri)
-
-        #  tunnel exists and is healthy
-        if tunnel_key in self._tunnels:
-            tunnel = self._tunnels[tunnel_key]
-            if tunnel.is_active:
-                return tunnel
-
-        # create or recreate tunnel
-        with self._tunnel_locks[tunnel_key]:
-            existing_tunnel = self._tunnels.get(tunnel_key)
-            if existing_tunnel and existing_tunnel.is_active:
-                return existing_tunnel
-
-            # replace inactive or missing tunnel
-            return self._replace_tunnel(tunnel_key, ssh_tunnel, uri, existing_tunnel)
-
-    def _replace_tunnel(
-        self,
-        tunnel_key: str,
-        ssh_tunnel: "SSHTunnel",
-        uri: URL,
-        old_tunnel: SSHTunnelForwarder | None,
-    ) -> SSHTunnelForwarder:
-        """
-        Replace tunnel with proper cleanup.
-
-        This function assumes caller holds lock.
-        """
-        if old_tunnel:
-            try:
-                old_tunnel.stop()
-            except Exception:
-                logger.exception("Error stopping old tunnel")
-
-        try:
-            new_tunnel = self._create_tunnel(ssh_tunnel, uri)
-            self._tunnels[tunnel_key] = new_tunnel
-        except Exception:
-            # Remove failed tunnel from cache
-            self._tunnels.pop(tunnel_key, None)
-            logger.exception("Failed to create tunnel")
-            raise
-
-        return new_tunnel
-
-    def _get_tunnel_key(self, ssh_tunnel: "SSHTunnel", uri: URL) -> TunnelKey:
-        """
-        Build a unique key for the SSH tunnel.
-        """
-        keys = self._get_tunnel_kwargs(ssh_tunnel, uri)
-
-        return dumps(keys, sort_keys=True)
-
-    def _create_tunnel(self, ssh_tunnel: "SSHTunnel", uri: URL) -> SSHTunnelForwarder:
-        kwargs = self._get_tunnel_kwargs(ssh_tunnel, uri)
-        tunnel = SSHTunnelForwarder(**kwargs)
-        tunnel.start()
-
-        return tunnel
-
-    def _get_tunnel_kwargs(self, ssh_tunnel: "SSHTunnel", uri: URL) -> dict[str, Any]:
-        backend = uri.get_backend_name()
-        # Import here to avoid circular imports
-        from superset.utils.ssh_tunnel import get_default_port
-
-        kwargs = {
-            "ssh_address_or_host": (ssh_tunnel.server_address, ssh_tunnel.server_port),
-            "ssh_username": ssh_tunnel.username,
-            "remote_bind_address": (uri.host, uri.port or get_default_port(backend)),
-            "local_bind_address": (ssh_tunnel.local_bind_address,),
-            "debug_level": logging.getLogger("flask_appbuilder").level,
-        }
-
-        if ssh_tunnel.password:
-            kwargs["ssh_password"] = ssh_tunnel.password
-        elif ssh_tunnel.private_key:
-            private_key_file = StringIO(ssh_tunnel.private_key)
-            private_key = RSAKey.from_private_key(
-                private_key_file,
-                ssh_tunnel.private_key_password,
-            )
-            kwargs["ssh_pkey"] = private_key
-
-        if self.mode == EngineModes.PER_CONNECTION:
-            kwargs["keepalive"] = 0  # disable
-
-        return kwargs
-
     def start_cleanup_thread(self) -> None:
-        """
-        Start the background cleanup thread.
-
-        The thread will periodically clean up abandoned locks at the configured
-        interval. This is safe to call multiple times - subsequent calls are no-ops.
-        """
-        with self._cleanup_thread_lock:
-            if self._cleanup_thread is None or not self._cleanup_thread.is_alive():
-                self._cleanup_stop_event.clear()
-                self._cleanup_thread = threading.Thread(
-                    target=self._cleanup_worker,
-                    name=f"EngineManager-cleanup-{id(self)}",
-                    daemon=True,
-                )
-                self._cleanup_thread.start()
-                logger.info(
-                    f"Started cleanup thread with {self.cleanup_interval}s interval"
-                )
+        """Start the background cleanup thread."""
+        self._cleanup_manager.start()
 
     def stop_cleanup_thread(self) -> None:
-        """
-        Stop the background cleanup thread gracefully.
-
-        This will signal the thread to stop and wait for it to finish.
-        Safe to call even if no thread is running.
-        """
-        with self._cleanup_thread_lock:
-            if self._cleanup_thread is not None and self._cleanup_thread.is_alive():
-                self._cleanup_stop_event.set()
-                self._cleanup_thread.join(timeout=5.0)  # 5 second timeout
-                if self._cleanup_thread.is_alive():
-                    logger.warning("Cleanup thread did not stop within timeout")
-                else:
-                    logger.info("Cleanup thread stopped")
-                self._cleanup_thread = None
-
-    def _cleanup_worker(self) -> None:
-        """
-        Background thread worker that periodically cleans up abandoned locks.
-        """
-        while not self._cleanup_stop_event.is_set():
-            try:
-                self._cleanup_abandoned_locks()
-            except Exception:
-                logger.exception("Error during background cleanup")
-
-            # Use wait() instead of sleep() to allow for immediate shutdown
-            if self._cleanup_stop_event.wait(timeout=self.cleanup_interval):
-                break  # Stop event was set
+        """Stop the background cleanup thread gracefully."""
+        self._cleanup_manager.stop()
 
     def cleanup(self) -> None:
-        """
-        Public method to manually trigger cleanup of abandoned locks.
-
-        This can be called periodically by external systems to prevent
-        memory leaks from accumulating locks.
-        """
-        self._cleanup_abandoned_locks()
+        """Manually trigger cleanup of abandoned locks."""
+        self._cleanup_manager.trigger_cleanup()
 
     def _cleanup_abandoned_locks(self) -> None:
         """
@@ -504,16 +575,12 @@ class EngineManager:
                 f"Cleaned up {len(abandoned_engine_locks)} abandoned engine locks"
             )
 
-        # Clean up tunnel locks
-        active_tunnel_keys = set(self._tunnels.keys())
-        abandoned_tunnel_locks = set(self._tunnel_locks.keys()) - active_tunnel_keys
-        for key in abandoned_tunnel_locks:
-            self._tunnel_locks.pop(key, None)
+        # Clean up tunnel locks via tunnel manager
+        active_tunnel_keys = self._tunnel_manager.get_active_tunnels()
+        tunnel_locks_cleaned = self._tunnel_manager.cleanup_locks(active_tunnel_keys)
 
-        if abandoned_tunnel_locks:
-            logger.debug(
-                f"Cleaned up {len(abandoned_tunnel_locks)} abandoned tunnel locks"
-            )
+        if tunnel_locks_cleaned:
+            logger.debug(f"Cleaned up {tunnel_locks_cleaned} abandoned tunnel locks")
 
     def _add_disposal_listener(self, engine: Engine, engine_key: EngineKey) -> None:
         @event.listens_for(engine, "engine_disposed")

@@ -58,16 +58,18 @@ class EngineManagerExtension:
                 )
             except KeyError:
                 logger.warning(
-                    f"Invalid ENGINE_MANAGER_MODE '{mode_config}', defaulting to PER_CONNECTION"
+                    f"Invalid ENGINE_MANAGER_MODE '{mode_config}', "
+                    "defaulting to PER_CONNECTION"
                 )
                 mode = EngineModes.PER_CONNECTION
         elif isinstance(mode_config, EngineModes):
             mode = mode_config
         else:
             logger.warning(
-                f"Invalid ENGINE_MANAGER_MODE type {type(mode_config)}, defaulting to PER_CONNECTION"
+                f"Invalid ENGINE_MANAGER_MODE type {type(mode_config)}, "
+                "defaulting to PER_CONNECTION"
             )
-            mode = EngineModes.NEW
+            mode = EngineModes.PER_CONNECTION
 
         # Create the engine manager
         self.engine_manager = EngineManager(

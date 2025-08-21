@@ -238,8 +238,8 @@ SQLALCHEMY_CUSTOM_PASSWORD_STORE = None
 # Engine Manager Configuration
 # ---------------------------------------------------------
 
-# Engine manager mode: EngineModes.PER_CONNECTION creates a new engine for every connection (default),
-# EngineModes.POOLED reuses engines with connection pooling
+# Engine manager mode: EngineModes.PER_CONNECTION creates a new engine for every
+# connection (default), EngineModes.POOLED reuses engines with connection pooling
 ENGINE_MANAGER_MODE = EngineModes.PER_CONNECTION
 
 # Cleanup interval for abandoned locks in seconds (default: 5 minutes)

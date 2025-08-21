@@ -31,8 +31,10 @@ import {
   css,
   ensureIsArray,
   GenericDataType,
+  getColumnLabel,
   JsonObject,
   QueryFormData,
+  StatefulChart,
   t,
   useTheme,
 } from '@superset-ui/core';
@@ -233,6 +235,10 @@ export default function DrillDetailPane({
 
   // Download page of results & trim cache if page not in cache
   useEffect(() => {
+    // Skip table data fetching if we're using a drill-through chart
+    if (dataset?.drill_through_chart_id) {
+      return;
+    }
     if (!responseError && !isLoading && !resultsPages.has(pageIndex)) {
       setIsLoading(true);
       const jsonPayload = getDrillPayload(formData, filters) ?? {};
@@ -282,14 +288,46 @@ export default function DrillDetailPane({
     resultsPages,
   ]);
 
-  const bootstrapping = !responseError && !resultsPages.size;
+  const bootstrapping =
+    !dataset?.drill_through_chart_id && !responseError && !resultsPages.size;
 
   const allowHTML = formData.allow_render_html ?? true;
 
-  let tableContent = null;
-  if (responseError) {
+  let content = null;
+
+  // If a drill-through chart is configured, use it instead of the table
+  if (dataset?.drill_through_chart_id) {
+    // Convert filters to adhoc filter format for StatefulChart
+    const adhocFilters = filters.map(filter => ({
+      clause: 'WHERE' as const,
+      subject: getColumnLabel(filter.col),
+      operator: filter.op,
+      comparator: filter.formattedVal ?? String(filter.val),
+      expressionType: 'SIMPLE' as const,
+    }));
+
+    content = (
+      <div
+        css={css`
+          height: 100%;
+          display: flex;
+          flex-direction: column;
+        `}
+      >
+        <StatefulChart
+          chartId={dataset.drill_through_chart_id}
+          formDataOverrides={{
+            adhoc_filters: adhocFilters,
+          }}
+          height="100%"
+          width="100%"
+          showLoading
+        />
+      </div>
+    );
+  } else if (responseError) {
     // Render error if page download failed
-    tableContent = (
+    content = (
       <pre
         css={css`
           margin-top: ${theme.sizeUnit * 4}px;
@@ -300,14 +338,14 @@ export default function DrillDetailPane({
     );
   } else if (bootstrapping) {
     // Render loading if first page hasn't loaded
-    tableContent = <Loading />;
+    content = <Loading />;
   } else if (resultsPage?.total === 0) {
     // Render empty state if no results are returned for page
     const title = t('No rows were returned for this dataset');
-    tableContent = <EmptyState image="document.svg" title={title} />;
+    content = <EmptyState image="document.svg" title={title} />;
   } else {
     // Render table if at least one page has successfully loaded
-    tableContent = (
+    content = (
       <Resizable>
         <Table
           data={data}
@@ -331,7 +369,7 @@ export default function DrillDetailPane({
   return (
     <>
       {!bootstrapping && metadataBarComponent}
-      {!bootstrapping && (
+      {!bootstrapping && !dataset?.drill_through_chart_id && (
         <TableControls
           filters={filters}
           setFilters={setFilters}
@@ -340,7 +378,7 @@ export default function DrillDetailPane({
           onReload={handleReload}
         />
       )}
-      {tableContent}
+      {content}
     </>
   );
 }

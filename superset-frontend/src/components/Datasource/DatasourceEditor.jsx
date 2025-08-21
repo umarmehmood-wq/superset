@@ -974,7 +974,7 @@ class DatasourceEditor extends PureComponent {
             onChange={this.onDatasourcePropChange}
             label={t('Drill-to-details table/chart')}
             description={t(
-              'Select a chart to use as the drill-through view when users drill into this dataset. The selected chart will be displayed with appropriate filters applied. If not configured, the default table view with all columns will be shown.',
+              'Select a chart to display when users drill into this dataset. If not configured, shows all columns in a table.',
             )}
             control={
               <ChartSelect

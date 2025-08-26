@@ -48,7 +48,8 @@ import { usePermissions } from 'src/hooks/usePermissions';
 import { Dropdown } from '@superset-ui/core/components';
 import { updateDataMask } from 'src/dataMask/actions';
 import DrillByModal from 'src/components/Chart/DrillBy/DrillByModal';
-import { useDatasetDrillInfo } from 'src/hooks/apiResources/datasets';
+import { createVerboseMap } from 'src/hooks/apiResources/datasets';
+import { Dataset } from 'src/components/Chart/types';
 import { ResourceStatus } from 'src/hooks/apiResources/apiResources';
 import { DrillDetailMenuItems } from '../DrillDetail';
 import { getMenuAdjustedY } from '../utils';
@@ -100,9 +101,6 @@ const ChartContextMenu = (
 
   const crossFiltersEnabled = useSelector<RootState, boolean>(
     ({ dashboardInfo }) => dashboardInfo.crossFiltersEnabled,
-  );
-  const dashboardId = useSelector<RootState, number>(
-    ({ dashboardInfo }) => dashboardInfo.id,
   );
   const [openKeys, setOpenKeys] = useState<Key[]>([]);
 
@@ -190,12 +188,40 @@ const ChartContextMenu = (
     isDisplayed(ContextMenuItem.DrillBy) &&
     !formData.matrixify_enabled; // Disable drill by when matrixify is enabled
 
-  const datasetResource = useDatasetDrillInfo(
-    formData.datasource,
-    dashboardId,
-    formData,
-    !canDrillToDetail && !canDrillBy,
-  );
+  const dataset = useSelector((state: RootState) => {
+    if (!canDrillToDetail && !canDrillBy) return null;
+    const datasetId = formData.datasource.split('__')[0];
+    return Object.values(state.datasources).find(
+      ds => ds.id?.toString() === datasetId,
+    );
+  });
+
+  const datasetResource = useMemo(() => {
+    if (!canDrillToDetail && !canDrillBy) {
+      return {
+        status: ResourceStatus.Complete,
+        result: {} as any,
+        error: null,
+      };
+    }
+
+    if (!dataset) {
+      return {
+        status: ResourceStatus.Loading,
+        result: null,
+        error: null,
+      };
+    }
+
+    return {
+      status: ResourceStatus.Complete,
+      result: {
+        ...dataset,
+        verbose_map: createVerboseMap(dataset as Dataset),
+      } as Dataset,
+      error: null,
+    };
+  }, [dataset, canDrillToDetail, canDrillBy]);
 
   const isLoadingDataset = datasetResource.status === ResourceStatus.Loading;
 

@@ -16,87 +16,57 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import { useCallback, useMemo, ReactNode } from 'react';
-import rison from 'rison';
-import {
-  t,
-  JsonResponse,
-  ClientErrorObject,
-  getClientErrorObject,
-} from '@superset-ui/core';
-import { AsyncSelect } from '@superset-ui/core/components';
-import { cachedSupersetGet } from 'src/utils/cachedSupersetGet';
+import { useMemo } from 'react';
+import { t } from '@superset-ui/core';
+import { Select } from '@superset-ui/core/components';
 import {
   Dataset,
   DatasetSelectLabel,
 } from 'src/features/datasets/DatasetSelectLabel';
+import { Datasource } from 'src/dashboard/types';
 
 interface DatasetSelectProps {
   onChange: (value: { label: string; value: number }) => void;
   value?: { label: string; value: number };
+  datasets: Datasource[];
 }
 
-const DatasetSelect = ({ onChange, value }: DatasetSelectProps) => {
-  const getErrorMessage = useCallback(
-    ({ error, message }: ClientErrorObject) => {
-      let errorText = message || error || t('An error has occurred');
-      if (message === 'Forbidden') {
-        errorText = t('You do not have permission to edit this dashboard');
-      }
-      return errorText;
-    },
-    [],
+const DatasetSelect = ({ onChange, value, datasets }: DatasetSelectProps) => {
+  const datasetOptions = useMemo(
+    () =>
+      datasets
+        .map(dataset => ({
+          label: DatasetSelectLabel(dataset as Dataset),
+          value: dataset.id,
+        }))
+        .sort((a, b) => {
+          // Sort by table name for consistency
+          const labelA = typeof a.label === 'string' ? a.label : '';
+          const labelB = typeof b.label === 'string' ? b.label : '';
+          return labelA.localeCompare(labelB);
+        }),
+    [datasets],
   );
 
-  const loadDatasetOptions = async (
-    search: string,
-    page: number,
-    pageSize: number,
-  ) => {
-    const query = rison.encode({
-      columns: ['id', 'table_name', 'database.database_name', 'schema'],
-      filters: [{ col: 'table_name', opr: 'ct', value: search }],
-      page,
-      page_size: pageSize,
-      order_column: 'table_name',
-      order_direction: 'asc',
-    });
-    return cachedSupersetGet({
-      endpoint: `/api/v1/dataset/?q=${query}`,
-    })
-      .then((response: JsonResponse) => {
-        const list: {
-          label: string | ReactNode;
-          value: string | number;
-        }[] = response.json.result.map((item: Dataset) => ({
-          label: DatasetSelectLabel(item),
-          value: item.id,
-        }));
-        return {
-          data: list,
-          totalCount: response.json.count,
-        };
-      })
-      .catch(async error => {
-        const errorMessage = getErrorMessage(await getClientErrorObject(error));
-        throw new Error(errorMessage);
-      });
-  };
-
   return (
-    <AsyncSelect
+    <Select
       ariaLabel={t('Dataset')}
       value={value}
-      options={loadDatasetOptions}
+      options={datasetOptions}
       onChange={onChange}
       notFoundContent={t('No compatible datasets found')}
       placeholder={t('Select a dataset')}
+      showSearch
+      filterOption={(input, option) => {
+        const label = typeof option?.label === 'string' ? option.label : '';
+        return label.toLowerCase().includes(input.toLowerCase());
+      }}
     />
   );
 };
 
 const MemoizedSelect = (props: DatasetSelectProps) =>
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  useMemo(() => <DatasetSelect {...props} />, []);
+  useMemo(() => <DatasetSelect {...props} />, [props.datasets, props.value]);
 
 export default MemoizedSelect;

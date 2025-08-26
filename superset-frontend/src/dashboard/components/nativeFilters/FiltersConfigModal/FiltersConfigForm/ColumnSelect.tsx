@@ -16,18 +16,10 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import { useCallback, useState, useMemo, useEffect } from 'react';
-import rison from 'rison';
-import {
-  Column,
-  ensureIsArray,
-  t,
-  useChangeEffect,
-  getClientErrorObject,
-} from '@superset-ui/core';
+import { useCallback, useMemo, useEffect } from 'react';
+import { Column, ensureIsArray, useChangeEffect, t } from '@superset-ui/core';
 import { type FormInstance, Select } from '@superset-ui/core/components';
-import { useToasts } from 'src/components/MessageToasts/withToasts';
-import { cachedSupersetGet } from 'src/utils/cachedSupersetGet';
+import { Datasource } from 'src/dashboard/types';
 import { NativeFiltersForm, NativeFiltersFormItem } from '../types';
 
 interface ColumnSelectProps {
@@ -40,6 +32,7 @@ interface ColumnSelectProps {
   value?: string | string[];
   onChange?: (value: string) => void;
   mode?: 'multiple';
+  dataset?: Datasource;
 }
 
 /** Special purpose AsyncSelect that selects a column from a dataset */
@@ -54,15 +47,15 @@ export function ColumnSelect({
   value,
   onChange,
   mode,
+  dataset, // 🔥 MURDER CACHE: Accept dataset via props
 }: ColumnSelectProps) {
-  const [columns, setColumns] = useState<Column[]>();
-  const [loading, setLoading] = useState(false);
-  const { addDangerToast } = useToasts();
   const resetColumnField = useCallback(() => {
     form.setFields([
       { name: ['filters', filterId, formField], touched: false, value: null },
     ]);
   }, [form, filterId, formField]);
+
+  const columns = useMemo(() => dataset?.columns || [], [dataset?.columns]);
 
   const options = useMemo(
     () =>
@@ -84,57 +77,34 @@ export function ColumnSelect({
     if (currentColumn && !filterValues(currentColumn)) {
       resetColumnField();
     }
-  }, [currentColumn, currentFilterType, resetColumnField]);
+  }, [currentColumn, currentFilterType, resetColumnField, filterValues]);
 
+  // Reset column when dataset changes
   useChangeEffect(datasetId, previous => {
-    if (previous != null) {
-      setColumns([]);
+    if (previous != null && previous !== datasetId) {
       resetColumnField();
     }
-    if (datasetId != null) {
-      setLoading(true);
-      cachedSupersetGet({
-        endpoint: `/api/v1/dataset/${datasetId}?q=${rison.encode({
-          columns: [
-            'columns.column_name',
-            'columns.is_dttm',
-            'columns.type_generic',
-            'columns.filterable',
-          ],
-        })}`,
-      })
-        .then(
-          ({ json: { result } }) => {
-            const lookupValue = Array.isArray(value) ? value : [value];
-            const valueExists = result.columns.some((column: Column) =>
-              lookupValue?.includes(column.column_name),
-            );
-            if (!valueExists) {
-              resetColumnField();
-            }
-            setColumns(result.columns);
-          },
-          async badResponse => {
-            const { error, message } = await getClientErrorObject(badResponse);
-            let errorText = message || error || t('An error has occurred');
-            if (message === 'Forbidden') {
-              errorText = t(
-                'You do not have permission to edit this dashboard',
-              );
-            }
-            addDangerToast(errorText);
-          },
-        )
-        .finally(() => setLoading(false));
-    }
   });
+
+  // Validate that current value exists in new dataset
+  useEffect(() => {
+    if (value && columns.length > 0) {
+      const lookupValue = Array.isArray(value) ? value : [value];
+      const valueExists = columns.some((column: Column) =>
+        lookupValue?.includes(column.column_name),
+      );
+      if (!valueExists) {
+        resetColumnField();
+      }
+    }
+  }, [columns, value, resetColumnField]);
 
   return (
     <Select
       mode={mode}
       value={mode === 'multiple' ? value || [] : value}
       ariaLabel={t('Column select')}
-      loading={loading}
+      loading={false}
       onChange={onChange}
       options={options}
       placeholder={t('Select a column')}

@@ -59,7 +59,8 @@ import { LOG_ACTIONS_CHART_DOWNLOAD_AS_IMAGE } from 'src/logger/LogUtils';
 import { MenuKeys, RootState } from 'src/dashboard/types';
 import DrillDetailModal from 'src/components/Chart/DrillDetail/DrillDetailModal';
 import { usePermissions } from 'src/hooks/usePermissions';
-import { useDatasetDrillInfo } from 'src/hooks/apiResources/datasets';
+import { createVerboseMap } from 'src/hooks/apiResources/datasets';
+import { Dataset } from 'src/components/Chart/types';
 import { ResourceStatus } from 'src/hooks/apiResources/apiResources';
 import { useCrossFiltersScopingModal } from '../nativeFilters/FilterBar/CrossFilters/ScopingModal/useCrossFiltersScopingModal';
 import { ViewResultsModalTrigger } from './ViewResultsModalTrigger';
@@ -180,12 +181,27 @@ const SliceHeaderControls = (
   const canExplore = props.supersetCanExplore;
   const { canDrillToDetail, canViewQuery, canViewTable } = usePermissions();
 
-  const datasetResource = useDatasetDrillInfo(
-    props.slice.datasource,
-    props.dashboardId,
-    props.formData,
-    !canDrillToDetail,
-  );
+  const dataset = useSelector((state: RootState) => {
+    if (!canDrillToDetail) return null;
+    const datasetId = props.slice.datasource.split('__')[0];
+    return Object.values(state.datasources).find(
+      ds => ds.id?.toString() === datasetId,
+    );
+  });
+
+  const datasetResource = {
+    status:
+      !canDrillToDetail || dataset
+        ? ResourceStatus.Complete
+        : ResourceStatus.Loading,
+    result: dataset
+      ? {
+          ...dataset,
+          verbose_map: createVerboseMap(dataset as Dataset),
+        }
+      : ({} as any),
+    error: null,
+  };
 
   const datasetWithVerboseMap =
     datasetResource.status === ResourceStatus.Complete

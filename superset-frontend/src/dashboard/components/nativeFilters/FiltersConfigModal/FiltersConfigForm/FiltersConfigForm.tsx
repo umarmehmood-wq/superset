@@ -28,10 +28,8 @@ import {
   Filter,
   GenericDataType,
   getChartMetadataRegistry,
-  JsonResponse,
   NativeFilterType,
   styled,
-  SupersetApiError,
   t,
   ClientErrorObject,
   getClientErrorObject,
@@ -50,7 +48,6 @@ import {
   RefObject,
   memo,
 } from 'react';
-import rison from 'rison';
 import { PluginFilterSelectCustomizeProps } from 'src/filters/components/Select/types';
 import { useSelector } from 'react-redux';
 import { getChartDataRequest } from 'src/components/Chart/chartAction';
@@ -68,10 +65,8 @@ import {
   Loading,
 } from '@superset-ui/core/components';
 import { BasicErrorAlert, ErrorMessageWithStackTrace } from 'src/components';
-import { addDangerToast } from 'src/components/MessageToasts/actions';
 import { Radio } from '@superset-ui/core/components/Radio';
 import Tabs from '@superset-ui/core/components/Tabs';
-import { cachedSupersetGet } from 'src/utils/cachedSupersetGet';
 import {
   Chart,
   ChartsState,
@@ -599,44 +594,22 @@ const FiltersConfigForm = (
   const DateFilterComponent = DateFilterControlExtension ?? DateFilterControl;
 
   useEffect(() => {
-    if (datasetId) {
-      cachedSupersetGet({
-        endpoint: `/api/v1/dataset/${datasetId}?q=${rison.encode({
-          columns: [
-            'columns.column_name',
-            'columns.expression',
-            'columns.filterable',
-            'columns.is_dttm',
-            'columns.type',
-            'columns.verbose_name',
-            'database.id',
-            'database.database_name',
-            'datasource_type',
-            'filter_select_enabled',
-            'id',
-            'is_sqllab_view',
-            'main_dttm_col',
-            'metrics.metric_name',
-            'metrics.verbose_name',
-            'schema',
-            'sql',
-            'table_name',
-          ],
-        })}`,
-      })
-        .then((response: JsonResponse) => {
-          setMetrics(response.json?.result?.metrics);
-          const dataset = response.json?.result;
-          // modify the response to fit structure expected by AdhocFilterControl
-          dataset.type = dataset.datasource_type;
-          dataset.filter_select = true;
-          setDatasetDetails(dataset);
-        })
-        .catch((response: SupersetApiError) => {
-          addDangerToast(response.message);
-        });
+    if (datasetId && loadedDatasets) {
+      const datasetKey = `${datasetId}__table`;
+      const dataset = loadedDatasets[datasetKey];
+
+      if (dataset) {
+        setMetrics(dataset.metrics || []);
+        // modify the response to fit structure expected by AdhocFilterControl
+        const datasetDetails = {
+          ...dataset,
+          type: dataset.type || 'table',
+          filter_select: true,
+        };
+        setDatasetDetails(datasetDetails);
+      }
     }
-  }, [datasetId]);
+  }, [datasetId, loadedDatasets]);
 
   useImperativeHandle(ref, () => ({
     changeTab(tab: 'configuration' | 'scoping') {
@@ -726,6 +699,7 @@ const FiltersConfigForm = (
         filterId={filterId}
         filterValues={(column: Column) => !!column.is_dttm}
         datasetId={datasetId}
+        dataset={datasetId ? loadedDatasets[`${datasetId}__table`] : undefined}
         onChange={column => {
           // We need reset default value when column changed
           setNativeFilterFieldValues(form, filterId, {
@@ -869,6 +843,7 @@ const FiltersConfigForm = (
                         {...getFiltersConfigModalTestId('datasource-input')}
                       >
                         <DatasetSelect
+                          datasets={Object.values(loadedDatasets)}
                           onChange={(value: {
                             label: string;
                             value: number;

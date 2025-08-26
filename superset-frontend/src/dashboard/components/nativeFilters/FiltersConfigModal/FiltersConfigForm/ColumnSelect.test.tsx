@@ -22,41 +22,47 @@ import {
   userEvent,
   waitFor,
 } from 'spec/helpers/testing-library';
-import fetchMock from 'fetch-mock';
-import { Column, JsonObject, getClientErrorObject } from '@superset-ui/core';
+import { Column, JsonObject } from '@superset-ui/core';
+import { Datasource } from 'src/dashboard/types';
 import { ColumnSelect } from './ColumnSelect';
 
-jest.mock('@superset-ui/core', () => ({
-  ...jest.requireActual('@superset-ui/core'),
-  getClientErrorObject: jest.fn(() => Promise.resolve({ error: 'Error' })),
-}));
+const mockDataset: Datasource = {
+  id: 123,
+  uid: '123__table',
+  table_name: 'test_table',
+  type: 'table',
+  columns: [
+    { column_name: 'column_name_01', is_dttm: true } as Column,
+    { column_name: 'column_name_02', is_dttm: false } as Column,
+    { column_name: 'column_name_03', is_dttm: false } as Column,
+  ],
+  metrics: [],
+  column_types: [],
+  column_formats: {},
+  verbose_map: {},
+  main_dttm_col: '',
+  datasource_name: 'test_table',
+  description: null,
+} as Datasource;
 
-const mockedGetClientErrorObject = getClientErrorObject as jest.Mock;
-
-fetchMock.get('glob:*/api/v1/dataset/123?*', {
-  body: {
-    result: {
-      columns: [
-        { column_name: 'column_name_01', is_dttm: true },
-        { column_name: 'column_name_02', is_dttm: false },
-        { column_name: 'column_name_03', is_dttm: false },
-      ],
-    },
-  },
-});
-fetchMock.get('glob:*/api/v1/dataset/456?*', {
-  body: {
-    result: {
-      columns: [
-        { column_name: 'column_name_04', is_dttm: false },
-        { column_name: 'column_name_05', is_dttm: false },
-        { column_name: 'column_name_06', is_dttm: false },
-      ],
-    },
-  },
-});
-
-fetchMock.get('glob:*/api/v1/dataset/789?*', { status: 404 });
+const mockDataset2: Datasource = {
+  id: 456,
+  uid: '456__table',
+  table_name: 'test_table_2',
+  type: 'table',
+  columns: [
+    { column_name: 'column_name_04', is_dttm: false } as Column,
+    { column_name: 'column_name_05', is_dttm: false } as Column,
+    { column_name: 'column_name_06', is_dttm: false } as Column,
+  ],
+  metrics: [],
+  column_types: [],
+  column_formats: {},
+  verbose_map: {},
+  main_dttm_col: '',
+  datasource_name: 'test_table_2',
+  description: null,
+} as Datasource;
 
 const createProps = (extraProps: JsonObject = {}) => ({
   filterId: 'filterId',
@@ -64,11 +70,8 @@ const createProps = (extraProps: JsonObject = {}) => ({
   datasetId: 123,
   value: 'column_name_01',
   onChange: jest.fn(),
+  dataset: mockDataset,
   ...extraProps,
-});
-
-afterAll(() => {
-  fetchMock.restore();
 });
 
 test('Should render', async () => {
@@ -101,23 +104,23 @@ test('Should call "setFields" when "datasetId" changes', () => {
   expect(props.form.setFields).not.toHaveBeenCalled();
 
   props.datasetId = 456;
+  props.dataset = mockDataset2;
   rerender(<ColumnSelect {...(props as any)} />);
 
   expect(props.form.setFields).toHaveBeenCalled();
 });
 
-test('Should call "getClientErrorObject" when api returns an error', async () => {
-  const props = createProps();
+test('Should handle missing dataset gracefully', async () => {
+  const props = createProps({
+    dataset: undefined,
+    datasetId: 789,
+  });
 
-  props.datasetId = 789;
-
-  expect(mockedGetClientErrorObject).not.toHaveBeenCalled();
-  render(<ColumnSelect {...(props as any)} />, {
+  const { container } = render(<ColumnSelect {...(props as any)} />, {
     useRedux: true,
   });
-  await waitFor(() => {
-    expect(mockedGetClientErrorObject).toHaveBeenCalled();
-  });
+  expect(container.children).toHaveLength(1);
+  expect(screen.queryByRole('option')).not.toBeInTheDocument();
 });
 
 test('Should filter results', async () => {

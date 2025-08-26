@@ -22,15 +22,9 @@ import { renderHook } from '@testing-library/react-hooks';
 import mockState from 'spec/fixtures/mockState';
 import { sliceId } from 'spec/fixtures/mockChartQueries';
 import { noOp } from 'src/utils/common';
-import { cachedSupersetGet } from 'src/utils/cachedSupersetGet';
 import { useContextMenu } from './useContextMenu';
 import { ContextMenuItem } from './ChartContextMenu';
 
-jest.mock('src/utils/cachedSupersetGet');
-
-const mockCachedSupersetGet = cachedSupersetGet as jest.MockedFunction<
-  typeof cachedSupersetGet
->;
 const CONTEXT_MENU_TEST_ID = 'chart-context-menu';
 
 // @ts-ignore
@@ -80,16 +74,7 @@ const setup = ({
 };
 
 beforeEach(() => {
-  mockCachedSupersetGet.mockClear();
-  mockCachedSupersetGet.mockResolvedValue({
-    response: {} as Response,
-    json: {
-      result: {
-        columns: [],
-        metrics: [],
-      },
-    },
-  });
+  // No mock setup needed - using Redux store instead of API calls
 });
 
 test('Context menu renders', () => {
@@ -291,7 +276,7 @@ test('Context menu does not show "Drill to detail" with `can_drill`, `can_explor
   expect(screen.queryByText('Drill to detail')).not.toBeInTheDocument();
 });
 
-test('Dataset drill info API call is made when user has drill permissions', async () => {
+test('Context menu opens when user has drill permissions', async () => {
   const result = setup({
     roles: {
       Admin: [
@@ -304,17 +289,10 @@ test('Dataset drill info API call is made when user has drill permissions', asyn
   });
 
   result.current.onContextMenu(0, 0, {});
-
-  await new Promise(resolve => setTimeout(resolve, 0));
-
-  expect(mockCachedSupersetGet).toHaveBeenCalledWith({
-    endpoint: expect.stringContaining(
-      '/api/v1/dataset/1/drill_info/?q=(dashboard_id:',
-    ),
-  });
+  expect(result.current.contextMenu).toBeDefined();
 });
 
-test('Dataset drill info API call is not made when user lacks drill permissions', async () => {
+test('Context menu handles lack of drill permissions', async () => {
   const result = setup({
     roles: {
       Admin: [['invalid_permission', 'Dashboard']],
@@ -325,7 +303,6 @@ test('Dataset drill info API call is not made when user lacks drill permissions'
 
   await new Promise(resolve => setTimeout(resolve, 0));
 
-  expect(mockCachedSupersetGet).not.toHaveBeenCalled();
   expect(screen.queryByText('Drill by')).not.toBeInTheDocument();
   expect(screen.queryByText('Drill to detail')).not.toBeInTheDocument();
 });

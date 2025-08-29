@@ -27,10 +27,8 @@ import sys
 from celery.schedules import crontab
 from flask_caching.backends.filesystemcache import FileSystemCache
 
-SECRET_KEY = "3k9f8JH+2kL1mN7pQ9xYz5aB8cD4eF6gH7iJ8kL9mN0oP1qR2sT3uV4wX5yZ6=="
-
 logger = logging.getLogger()
-
+SECRET_KEY = "bYcE4A6XqYzL8T9uIhM7pQdV2fRkNsWjZtX3yUaHvG5jKrLmBo1cFsQnRwXeTzV0"
 DATABASE_DIALECT = os.getenv("DATABASE_DIALECT")
 DATABASE_USER = os.getenv("DATABASE_USER")
 DATABASE_PASSWORD = os.getenv("DATABASE_PASSWORD")
@@ -144,5 +142,3 @@ try:
     )
 except ImportError:
     logger.info("Using default Docker config...")
-
-
